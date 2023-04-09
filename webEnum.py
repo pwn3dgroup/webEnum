@@ -7,13 +7,15 @@ import requests
 import threading
 import socket
 import re
+import json
 from time import sleep
 from sys import argv
-from urllib.parse import urlparse
 from urllib.parse import quote
 from random import choice as random_choice
 from django.core.validators import URLValidator
 from alive_progress import alive_bar
+from chardet import detect as detect_encoding
+from inspect import currentframe
 
 
 def banner():
@@ -55,6 +57,17 @@ class ProxyParser(argparse.Action):
         except:
             show_error(f"uanble to parse {values} due to incorrect format ", "ProxyParser")
 
+class ListParser(argparse.Action):
+    """this class is used to convert an argument directly into a comma separated list"""
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, list())
+        try:
+            for val in values.split(','):
+                getattr(namespace, self.dest).append(val)
+        except:
+            show_error(f"unable to parse {values} due to incorrect format", "class::ListParser")
+ 
+
 class bcolors:
     HEADER  = '\033[95m'
     OKGREEN = '\033[92m'
@@ -75,12 +88,13 @@ def parse_arguments():
     parser.add_argument("-u", "--url",         metavar="", required=True, help=f"target url. ex --> http://localhost/")
     parser.add_argument("-w", "--wordlist",    metavar="", required=True, type=argparse.FileType('r', encoding='latin-1'), help="wordlist")
     parser.add_argument("-b", "--body-data",   metavar="", help=f"body data to send using POST method. ex --> 'username=admin&password=admin'")
-    parser.add_argument("-C", "--cookies",     metavar="", default={}, action=DictParser,  help="set cookies.      ex --> 'Cookie1=lol&Cookie2=lol'")
-    parser.add_argument("-H", "--headers",     metavar="", default={}, action=DictParser,  help="set HTTP headers. ex --> 'Header1=lol&Header2=lol'")    
-    parser.add_argument("-P", "--proxies",     metavar="", default={}, action=ProxyParser, help="set proxies.      ex --> 'http;http://proxy1:8080,https;http://proxy2:8000'") 
+    parser.add_argument("-C", "--cookies",     metavar="", default={},   action=DictParser,  help="set cookies.      ex --> 'Cookie1=lol&Cookie2=lol'")
+    parser.add_argument("-H", "--headers",     metavar="", default={},   action=DictParser,  help="set HTTP headers. ex --> 'Header1=lol&Header2=lol'")    
+    parser.add_argument("-P", "--proxies",     metavar="", default={},   action=ProxyParser, help="set proxies.      ex --> 'http;http://proxy1:8080,https;http://proxy2:8000'") 
+    parser.add_argument("-x", "--extensions",  metavar="", default=None, action=ListParser, help=f"extensions to append to each request. ex --> 'php,js,txt'")        
     parser.add_argument("-U", "--user-agent",  metavar="", default="yoMama", help="specify user agent")
-    parser.add_argument("-X", "--http-method", metavar="", choices=["GET", "POST"], default="GET", help="HTTP method to use. [GET|POST]")
-    parser.add_argument("-x", "--extensions",  metavar="", default="", help=f"extensions to append to each request. ex --> 'php,js,txt'")    
+    parser.add_argument("-X", "--http-method", metavar="", choices=["GET", "HEAD", "POST"], default="GET", help="HTTP method to use. [GET|HEAD|POST]")
+    parser.add_argument("-js", "--json",     action="store_true", help="if specified, then body data should be json. ex --> -b {'username':'admin'}")
     parser.add_argument("-f", "--follow",    action="store_true", default=False, help="follow redirections")
     parser.add_argument("--rand-user-agent", action="store_true", help="randomize user-agent")
     parser.add_argument("--usage",           action="store_true", help="show usage examples")    
@@ -103,29 +117,22 @@ def parse_arguments():
 
     # hide filter group args
     filters = parser.add_argument_group("filter options")
-    filters.add_argument("-hs", "--hs-filter", metavar="", default="", help="hide responses with the specified status codes. ex: '300,400'")
-    filters.add_argument("-hc", "--hc-filter", metavar="", default="", help="hide responses with the specified content lenghts. ex: '1234,4321'")
-    filters.add_argument("-hw", "--hw-filter", metavar="", default="", help="hide responses with the specified  web servers. ex: 'apache,nginx'")
-    filters.add_argument("-hr", "--hr-filter", metavar="", default="", help="hide responses matching the specified pattern. ex: 'authentication failed'")    
+    filters.add_argument("-hs", "--hs-filter", metavar="", default=None, action=ListParser, help="hide responses with the specified status codes. ex: '300,400'")
+    filters.add_argument("-hc", "--hc-filter", metavar="", default=None, action=ListParser, help="hide responses with the specified content lenghts. ex: '1234,4321'")
+    filters.add_argument("-hw", "--hw-filter", metavar="", default=None, action=ListParser, help="hide responses with the specified  web servers. ex: 'apache,nginx'")
+    filters.add_argument("-hr", "--hr-filter", metavar="", default=None, help="hide responses matching the specified pattern. ex: 'authentication failed'")    
 
     parsed_arguments               = parser.parse_args()        
 
-    # parsing extensions 
-    parsed_arguments.extensions = parsed_arguments.extensions.split(',')
-
     # parsing wordlist and total requests
-    parsed_arguments.wordlist_path = parsed_arguments.wordlist.name
-    parsed_arguments.request_count = 0
-    with open(parsed_arguments.wordlist_path, 'r', encoding="latin-1") as f:
-        parsed_arguments.request_total = sum(1 for _ in f)        
+    parsed_arguments.request_count = 0    
+    parsed_arguments.request_total = get_file_lines(parsed_arguments.wordlist.name)
 
-    if len(parsed_arguments.extensions) > 0:
-        parsed_arguments.request_total *= len(parsed_arguments.extensions)
-        
-    # parsing filters
-    parsed_arguments.hs_filter     = parsed_arguments.hs_filter.split(",")
-    parsed_arguments.hc_filter     = parsed_arguments.hc_filter.split(",")
-    parsed_arguments.hw_filter     = parsed_arguments.hw_filter.split(",")
+    if parsed_arguments.extensions != None: 
+        parsed_arguments.request_total += (parsed_arguments.request_total * len(parsed_arguments.extensions))
+
+    # setting up screenlock to avoid threads printing at the same time and mess the output
+    parsed_arguments.screenlock = threading.Semaphore(value=1)
 
     # parsing user agents
     parsed_arguments.UserAgent_wordlist = ['Mozilla/1.22 (compatible; MSIE 2.0d; Windows NT)', 
@@ -157,10 +164,77 @@ def parse_arguments():
     
     return parsed_arguments
 
+
 def usage():
     """ Only show ussage messages """
     print("No usage messages yet")
     exit(0)
+
+
+def get_file_lines(file):
+    """ retorna la cantidad de lineas de un archivo """
+
+    # detecting encoding
+    with open(file, 'rb') as f:
+        codification = detect_encoding(f.read())['encoding']
+
+    # getting lines
+    with open(file, 'r', encoding=codification) as f:
+        total = sum(1 for line in f)
+        
+    return total   
+
+
+def validate_arguments(args):
+    """ validate_arguments checks that every argument is valid or in the correct format """
+    
+    validate_url(args.url)
+
+    if args.http_method == "POST":
+        validate_body_data(args.headers, args.body_data)
+
+    # validating hs-filter (hide status code filter)
+    validate_filters(args.hs_filter, args.hc_filter, args.hw_filter, args.hr_filter)
+
+
+def validate_url(url):
+    """ validate url using URLValidator from django"""
+    val = URLValidator()    
+    try:
+        val(url)
+    except:
+        show_error(f"Error while validating url --> {url}", f"function::{currentframe().f_code.co_name}")
+
+
+def validate_body_data(post_data, js):
+    if post_data == None:
+        show_error("No post data specified", f"function::{currentframe().f_code.co_name}")
+    elif js:
+        try:
+            json.loads(post_data)
+        except json.decoder.JSONDecodeError:
+            show_error(f"Error while decoding json data {post_data}", f"function::{currentframe().f_code.co_name}")
+    else:
+        # normal body data validations goes here
+        pass
+
+
+def validate_filters(hs_filter, hc_filter, hw_filter, hr_filer):
+    # (hide status code filter)
+    if (hs_filter != None):
+        for status_code in hs_filter:
+            if status_code.isdigit == False:
+                show_error(f" incorrect hs_filter value {status_code}", f"function::{currentframe().f_code.co_name}")
+
+    # (hide content length filter)
+    if (hc_filter != None):
+        for content_length in hc_filter:
+            if content_length.isdigit == False:
+                show_error(f" incorrect hc_filter value {status_code}", f"function::{currentframe().f_code.co_name}")
+
+    # (hide web server filter)
+    # (hide regex filter)
+
 
 def initial_checks(args):
     """ Initial checks before proceeds with the program execution"""
@@ -178,103 +252,48 @@ def initial_checks(args):
         except :
             show_error(f"Proxy server is not responding", "initial_checks()")
 
-
-def validate_arguments(args):
-    """ validate_arguments checks that every argument is valid or in the correct format """
-    
-    validate_url(args.url)
-
-    #validate_wordlist(args.wordlist_path)
-
-    if args.http_method == "POST":
-        validate_body_data(args.headers, args.body_data)
-
-    #validate_cookies(args.cookies)
-
-    #validate_headers(args.headers)
-
-    #validate_user_agent(args.user_agent)
-
-    #validate_threads(args.threads)
-
-    #validate_timeout(args.timeout)
-
-    #validate_timewait(args.timewait)
-
-    #validate_retries(args.retries)
-
-    #validate_output(args.output)
-
-    #validate_proxies(args.proxies)
-
-    # validating hs-filter (hide status code filter)
-    if (args.hs_filter[0] != "None"):
-        for status_code in args.hs_filter:
-            if status_code.isdigit == False:
-                raise Exception(f" incorrect hs_filter value {status_code}")
-
-    # validating hc-filter (hide content length filter)
-    if (args.hc_filter[0] != "None"):
-        for content_length in args.hc_filter:
-            if content_length.isdigit == False:
-                raise Exception(f" incorrect hc_filter value {content_length}")
-
-def validate_url(url):
-    """ validate url using URLValidator from django"""
-    val = URLValidator()    
-    try:
-        val(url)
-    except:
-        show_error(f"Error while validating url --> {url}", "validate_url")
-
-def validate_body_data(headers, body_data):
-    pass
     
 def show_error(msg, origin):
     print(f"\n {origin} --> {bcolors.FAIL}error{bcolors.ENDC}")
     print(f" [X] {bcolors.FAIL}{msg}{bcolors.ENDC}")
     exit(-1)
 
+
 def show_config(args):
-    print("==========================================")
-    print("[!] General...")
-    print(f"          TARGET: {args.url}")
-    print(f"     HTTP METHOD: {args.http_method}")
-    if (args.http_method == "POST"):
-        print(f"           BODY DATA: {args.body_data}")
-    if (len(args.cookies) > 0):
-        print(f"             COOKIES: {args.cookies}")
-    if (len(args.headers) > 0):
-        print(f"             HEADERS: {args.headers}")
-    if (len(args.proxies) > 0):
-        print(f"             PROXIES: {args.proxies}")
-    print(f"      USER AGENT: {args.user_agent}")
-    print(f" RAND USER AGENT: {args.rand_user_agent}")
-    print(f"FOLLOW REDIRECTS: {args.follow}")
-    print(f"        WORDLIST: {args.wordlist_path}")
+    print(f"[!] %-20s %s"%(f"{bcolors.HEADER}GENERAL{bcolors.ENDC}", "="*40))
+    print("%-20s:%s"%("TARGET",args.url))
+    print("%-20s:%s"%("WORDLIST",args.wordlist.name))
+    print("%-20s:%s"%("METHOD",args.http_method))
+    print("%-20s:%s"%("JSON FORMAT",str(args.json)))    
+    print("%-20s:%s"%("BODY",args.body_data))    
+    print("%-20s:%s"%("COOKIES", str(args.cookies)))    
+    print("%-20s:%s"%("HEADERS", str(args.headers)))    
+    print("%-20s:%s"%("PROXIES", str(args.proxies)))    
+    print("%-20s:%s"%("EXTENSIONS", str(args.extensions)))        
+    print("%-20s:%s"%("USER-AGENT", str(args.user_agent)))    
+    print("%-20s:%s"%("RAND-USER-AGENT",str(args.rand_user_agent)))    
+    print("%-20s:%s"%("FOLLOW REDIRECT",str(args.follow)))    
+    print("%-20s:%s"%("IGNORE ERRORS",str(args.ignore_errors)))    
     print()
-    print("[!] Performance...")
-    print(f"         THREADS: {args.threads}")
-    print(f"         TIMEOUT: {args.timeout}")
-    print(f"        TIMEWAIT: {args.timewait}")
-    print(f"         RETRIES: {args.retries}")    
+    print(f"[!] %-20s %s"%(f"{bcolors.HEADER}PERFORMANCE{bcolors.ENDC}", "="*40))
+    print("%-20s:%s"%("THREADS",args.threads))    
+    print("%-20s:%s"%("TIMEOUT",args.timeout))    
+    print("%-20s:%s"%("TIMEWAIT",args.timewait))    
+    print("%-20s:%s"%("RETRIES",args.retries))    
     print()
-    print("[!] Debugging...")
-    print(f"         VERBOSE: {args.verbose}")
-    print(f"           DEBUG: {args.debug}")
-    print(f"          OUTPUT: {args.output}")
+    print(f"[!] %-20s %s"%(f"{bcolors.HEADER}DEBUGGING{bcolors.ENDC}", "="*40))
+    print("%-20s:%s"%("VERBOSE",args.verbose))    
+    print("%-20s:%s"%("DEBUG",args.debug))    
+    print("%-20s:%s"%("OUTPUT",args.output))    
     print()
-    print("[!] Filters...")
-    print(f"         SHOW SC: {args.ss_filter}") # status code
-    print(f"         SHOW CL: {args.sc_filter}") # content length
-    print(f"         SHOW WS: {args.sw_filter}") # web server
-    print(f"         SHOW RE: {args.sr_filter}") # regex    
-    print(f"         HIDE SC: {args.hs_filter}") # status code
-    print(f"         HIDE CL: {args.hc_filter}") # content length
-    print(f"         HIDE WS: {args.hw_filter}") # web server
-    print(f"         HIDE RE: {args.hr_filter}") # regex    
-    print("==========================================\n")
+    print(f"[!] %-20s %s"%(f"{bcolors.HEADER}FILTERS{bcolors.ENDC}", "="*40))
+    print("%-20s:%s"%("HIDE STATUS CODE",args.hs_filter))    
+    print("%-20s:%s"%("HIDE CONTENT LENGTH",args.hc_filter))    
+    print("%-20s:%s"%("HIDE WEB SERVER",args.hw_filter))    
+    print("%-20s:%s"%("HIDE RE PATTERN",args.hr_filter))    
+    print()
     sleep(2)
+
 
 def verbose(state, msg):
     if state == True:
@@ -283,35 +302,33 @@ def verbose(state, msg):
 def prog_bar(args):
     """ Progress bar"""
 
-    # as prog_bar is executed as a thread, it uses global variable
-    # run_event to know when it has to stop 
-    global run_event
-
     # setting global variable bar because it will be called from other threads
     # every time bar is called, progress var increments is bar in 1 
     global bar
-
     # starting alive_bar
     with alive_bar(args.request_total, title=f"Progress", enrich_print=False) as bar:
-        while args.request_count < args.request_total:
-            # stop thread if run_event not set
-            if run_event.is_set() == False:
-                break
-            
+        while True:
+            # stop thread if run_event has been cleaned
+            if args.run_event.is_set() == False :
+                status = False
+                for thread in threading.enumerate():
+                    # verifying all fuzzing threads are terminated
+                    if ("fuzzing" in thread.name):
+                        status = True
+                        break
+                
+                if (status == False):
+                    break
+
             sleep(0.1)
+
 
 def request_thread(args):
     """ 
     request_thread do the next jobs
     """
-    class Namespace():
-        pass
 
-    filters = Namespace()
-
-    # run_event tells request_thread when to stop
-    # and bar variable is to update progress_bar status
-    global run_event, bar, used_words
+    global bar
 
     word = " "
     retry_counter = 0
@@ -333,47 +350,53 @@ def request_thread(args):
     ## SETTING UP BODY DATA ##
     if args.http_method == "POST":
         body_data = args.body_data
-    
+
+    extension_iterator = 0
     while True:
+        
         # iterating to next word only when retry_counter = 0 
         if retry_counter == 0:
-            word = args.wordlist.readline()
-            word = quote(word.strip())
-            
+            if args.extensions != None and extension_iterator == 0:
+                word = args.wordlist.readline()
+                word = quote(word.strip())
+                temp = word
+                extension_iterator += 1
+            elif extension_iterator > 0:
+                word = temp + "." + args.extensions[extension_iterator - 1]
+                extension_iterator = 0 if extension_iterator == len(args.extensions) else extension_iterator + 1
+            else:
+                word = args.wordlist.readline()
+                word = quote(word.strip())
+
+
         # checking if threads should still running
-        if run_event.is_set() == False:
+        if args.run_event.is_set() == False:
             break
 
         # checking if thread exceeded total requests
         if args.request_count >= args.request_total:
             break
 
+        # check if word already has been sended
+        if word in args.words_requested:
+            continue
+
         # ignoring empty lines
         if word == "":
             bar()
+            args.words_requested.append(word)
             args.request_count += 1
             continue
         
-        # check if word already has been sended
-        if word in used_words:
-            continue
-        else:
-            used_words.append(word)
-
         # adding word to url
         new_url = args.url + word
-
         payload = new_url
 
         try:
-            if args.http_method == "GET":
-                req = requests.get(new_url, timeout=int(args.timeout),
+            if args.http_method == "GET" or args.http_method == "HEAD":
+                req = requests.request(args.http_method, new_url, timeout=int(args.timeout),
                                        allow_redirects=args.follow, proxies=args.proxies,
                                        cookies=cookies, headers=headers)
-            elif args.http_method == "HEAD":
-                req = requests.get(new_url, timeout=int(args.timeout),
-                                       allow_redirects=args.follow, proxies=args.proxies,
-                                       cookies=cookies, headers=headers)                
             elif args.http_method == "POST":
                 req = requests.post(url=new_url, data=body_data,
                                        timeout=int(args.timeout), allow_redirects=args.follow, proxies=args.proxies,
@@ -390,7 +413,7 @@ def request_thread(args):
                 print(f" {bcolors.WARNING}// Retrying connection PAYLOAD[{payload}] retries[{retry_counter}] {bcolors.ENDC}")
                 continue
 
-            run_event.clear()   
+            args.run_event.clear()   
             show_error(f"Error stablishing connection  PAYLOAD[{payload}]", "request_thread")
             
 
@@ -402,27 +425,37 @@ def request_thread(args):
 
         
         # using hide filters
-        if (args.hs_filter[0] != "None" or args.hc_filter[0] != "None" or args.hw_filter[0] != "None" or args.hr_filter != "None"):
-            filters.sc = args.hs_filter
-            filters.cl = args.hc_filter
-            filters.ws = args.hw_filter
-            filters.re = args.hr_filter
-            
-            if response_filter(filters, req) == False:
+
+        if (args.hs_filter != None or args.hc_filter != None or args.hw_filter != None or args.hr_filter != None):
+            if response_filter(args.hs_filter, args.hc_filter, args.hw_filter, args.hr_filter, req) == False:
                 output_string =  f"{bcolors.OKGREEN}PAYLOAD{bcolors.ENDC}[{bcolors.HEADER}%-100s{bcolors.ENDC}]"%(payload[:100]) + " "
-                output_string += f"{bcolors.OKGREEN}SC{bcolors.ENDC}[%-3s]"%(req.status_code) + " "
-                output_string += f"{bcolors.OKGREEN}CL{bcolors.ENDC}[%-10s]"%(req.headers["Content-Length"]) + " "
-                output_string += f"{bcolors.OKGREEN}SERVER{bcolors.ENDC}[%-10s]"%(req.headers["Server"]) + " "
+                output_string += f"{bcolors.OKGREEN}SC{bcolors.ENDC}[%s]"%(req.status_code) + " "
+                output_string += f"{bcolors.OKGREEN}CL{bcolors.ENDC}[%s]"%(req.headers["Content-Length"]) + " "
+                output_string += f"{bcolors.OKGREEN}SERVER{bcolors.ENDC}[%s]"%(req.headers["Server"]) + " "
+                args.screenlock.acquire()
                 print(output_string)
+                args.screenlock.release()
 
                 # write output to a file (log) if specified
                 if args.output != None:
                     args.output.write(output_string)
-                    
-                continue                               
-        
+        else:
+            # if no filters specified, then prints everything 
+            output_string =  f"{bcolors.OKGREEN}PAYLOAD{bcolors.ENDC}[{bcolors.HEADER}%-110s{bcolors.ENDC}]"%(payload[:110]) + " "
+            output_string += f"{bcolors.OKGREEN}SC{bcolors.ENDC}[%s]"%(req.status_code) + " "
+            output_string += f"{bcolors.OKGREEN}CL{bcolors.ENDC}[%s]"%(req.headers["Content-Length"]) + " "
+            output_string += f"{bcolors.OKGREEN}SERVER{bcolors.ENDC}[%s]"%(req.headers["Server"]) + " "
+            args.screenlock.acquire()
+            print(output_string)
+            args.screenlock.release()
+            
+            # write output to a file (log) if specified
+            if args.output != None:
+                args.output.write(output_string)
+
         bar()
         args.request_count += 1
+        
 
         # timewait 
         sleep(args.timewait)
@@ -431,38 +464,39 @@ def request_thread(args):
     return 0    
 
 
-def response_filter(filters, response):
+def response_filter(hs_filter, hc_filter, hw_filter, hr_filter, response):
     filter_status = False
     # show filters
-    if (len(filters.sc[0]) > 0):
+    if (hs_filter != None):
         # show matching status code filter
-        if str(response.status_code) in filters.sc:
+        if str(response.status_code) in hs_filter:
             filter_status = True
 
-    elif (len(filters.cl[0]) > 0):
+    elif (hc_filter != None):
         # show matching content length filter
         if response.headers["Content-Length"] != "UNK":
-            if str(response.headers["Content-Length"]) in filters.cl:
+            if str(response.headers["Content-Length"]) in hc_filter:
                 filter_status = True
 
-    elif (len(filters.ws[0]) > 0):
+    elif (hw_filter != None):
         # show matching web server name filter 
-        if response.headers["Server"] in filters.ws:
+        if response.headers["Server"] in hw_filter:
             filter_status = True
     
-    elif (len(filters.re) > 0):
+    elif (hr_filter != None):
         # show matching pattern filter
         # searching matching patterns in response headers
         matching = False
         for header in response.headers.keys():
-            if re.search(filters.re, response.headers[header]) != None:
+            if re.search(hr_filter, response.headers[header]) != None:
                 matching = True
                 break
 
         if matching == True:
             filter_status = True
         else:
-            aux = re.search(filters.re, response.content.decode("latin-1"))
+            # searching matching patterns in response content
+            aux = re.search(hr_filter, response.content.decode("latin-1"))
             if aux != None:
                 filter_status = True
 
@@ -474,10 +508,10 @@ def thread_starter(args):
     """this functions prepare and execute (start) every thread """
 
     # initializating global var run_event to stop threads when required
-    global run_event, used_words
-    used_words = list()
-    run_event = threading.Event()
-    run_event.set()
+    args.run_event = threading.Event()
+    args.run_event.set()
+    
+    args.words_requested = []
     
     # creating thread lists
     thread_list = []
@@ -499,24 +533,25 @@ def thread_starter(args):
     try:
         # if a thread clean run_event variable, that means a error has happened
         # for that reason, all threads must stop and the program itself should stop too
-        while run_event.is_set() and threading.active_count() > 1:
-            sleep(1)
+        while args.run_event.is_set() and threading.active_count() > 3:
+            sleep(0.4)
         
+        args.run_event.clear()
         exit_msg = "[!] program finished "
         exit_code = 0
         
     except KeyboardInterrupt:
         # to stop threads, run_event should be clear()
-        run_event.clear()
-            
-        exit_msg = "[!] threads successfully closed \n"
-        exit_msg += "[!] KeyboardInterrupt: Program finished by user..."
+        args.run_event.clear()
+        exit_msg = "[!] KeyboardInterrupt: Program finished by user...\n"    
+        exit_msg += "[!] threads successfully closed \n"
         exit_code = -1
 
     finally:
         # finishing threads
-        for thread in thread_list:
-            thread.join()
+        for i in range(1, len(thread_list)):
+            thread_list[i].join()
+        thread_list[0].join() # first thread of thread_list (prog_bar) should be the last one
 
     print(exit_msg)    
     return exit_code
@@ -551,6 +586,7 @@ if __name__ == "__main__":
 #   - Basic Auth 
 #   - Codificadores para los payloads
 #   - Aceptar rangos de valores en los content length y status code
+#   - implementar multiproceso combinado con multihilo
 
 ##  ERRORES O BUGS PARA CORREGIR
 #   - Los filtros no estan funcionando del todo bien
