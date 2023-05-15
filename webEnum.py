@@ -94,6 +94,7 @@ def parse_arguments():
     parser.add_argument("-x", "--extensions",  metavar="", default=None, action=ListParser, help=f"extensions to append to each request. ex --> 'php,js,txt'")        
     parser.add_argument("-U", "--user-agent",  metavar="", default="yoMama", help="specify user agent")
     parser.add_argument("-X", "--http-method", metavar="", choices=["GET", "HEAD", "POST"], default="GET", help="HTTP method to use. [GET|HEAD|POST]")
+    parser.add_argument("-s", "--add-slash", action="store_true", help="add slash [/] to the end of every http request")
     parser.add_argument("-js", "--json",     action="store_true", help="if specified, then body data should be json. ex --> -b {'username':'admin'}")
     parser.add_argument("-f", "--follow",    action="store_true", default=False, help="follow redirections")
     parser.add_argument("--rand-user-agent", action="store_true", help="randomize user-agent")
@@ -274,6 +275,7 @@ def show_config(args):
     print("%-20s:%s"%("RAND-USER-AGENT",str(args.rand_user_agent)))    
     print("%-20s:%s"%("FOLLOW REDIRECT",str(args.follow)))    
     print("%-20s:%s"%("IGNORE ERRORS",str(args.ignore_errors)))    
+    print("%-20s:%s"%("ADD SLASH",str(args.add_slash)))    
     print()
     print(f"[!] %-20s %s"%(f"{bcolors.HEADER}PERFORMANCE{bcolors.ENDC}", "="*40))
     print("%-20s:%s"%("THREADS",args.threads))    
@@ -353,7 +355,6 @@ def request_thread(args):
 
     extension_iterator = 0
     while True:
-        
         # iterating to next word only when retry_counter = 0 
         if retry_counter == 0:
             if args.extensions != None and extension_iterator == 0:
@@ -367,6 +368,9 @@ def request_thread(args):
             else:
                 word = args.wordlist.readline()
                 word = quote(word.strip())
+
+            if args.add_slash == True:
+                word += "/"
 
 
         # checking if threads should still running
