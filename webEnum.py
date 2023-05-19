@@ -18,6 +18,36 @@ from chardet import detect as detect_encoding
 from inspect import currentframe
 
 
+class UrlEncodedParameterParser(argparse.Action):
+    """this class is used to convert an argument directly into a dict using the format key=value&key=value"""
+    def __call__(self, parser, namespace, values, option_string=None):
+        try:
+            setattr(namespace, self.dest, {key: val for key, val in (query.split('=') for query in values.split('&'))})
+        except ValueError:
+            show_error(f"Invalid format for {self.dest}. Use key=value&key=value.", "class::UrlEncodedParameterParser")
+            exit(-1)
+
+
+class ListParser(argparse.Action):
+    """this class is used to convert an argument directly into a comma separated list"""
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, list())
+        try:
+            for val in values.split(","):
+                getattr(namespace, self.dest).append(val)
+        except:
+            show_error(f"unable to parse {values} due to incorrect format", "class::ListParser")
+            exit(-1)
+
+
+class AsciiColors:
+    HEADER = "\033[95m"
+    OKGREEN = "\033[92m"
+    WARNING = "\033[93m"
+    FAIL = "\033[91m"
+    ENDC = "\033[0m"
+
+
 def banner():
     author = "mind2hex"
     version = "1.0"
@@ -34,36 +64,6 @@ def banner():
     version: {AsciiColors.HEADER}{version}{AsciiColors.ENDC}
     """
     )
-
-
-class UrlEncodedParameterParser(argparse.Action):
-    """this class is used to convert an argument directly into a dict using the format key=value&key=value"""
-    def __call__(self, parser, namespace, values, option_string=None):
-        try:
-            setattr(namespace, self.dest, {key: val for key, val in (query.split('=') for query in values.split('&'))})
-        except ValueError:
-            show_error(f"Invalid format for {self.dest}. Use key=value&key=value.", "class::UrlEncodedParameterParser")
-            exit(-1)
-
-
-class list_parser(argparse.Action):
-    """this class is used to convert an argument directly into a comma separated list"""
-    def __call__(self, parser, namespace, values, option_string=None):
-        setattr(namespace, self.dest, list())
-        try:
-            for val in values.split(","):
-                getattr(namespace, self.dest).append(val)
-        except:
-            show_error(f"unable to parse {values} due to incorrect format", "class::list_parser")
-            exit(-1)
-
-
-class AsciiColors:
-    HEADER = "\033[95m"
-    OKGREEN = "\033[92m"
-    WARNING = "\033[93m"
-    FAIL = "\033[91m"
-    ENDC = "\033[0m"
 
 
 def parse_arguments():
@@ -127,7 +127,7 @@ def parse_arguments():
         "--extension",
         metavar="",
         default=None,
-        action=list_parser,
+        action=ListParser,
         help=f"extensions to append to each request. ex --> 'php,js,txt'",
     )
     parser.add_argument(
@@ -252,7 +252,7 @@ def parse_arguments():
         "--hs-filter",
         metavar="",
         default=None,
-        action=list_parser,
+        action=ListParser,
         help="hide responses with the specified status codes. ex: '300,400'",
     )
     filters.add_argument(
@@ -260,7 +260,7 @@ def parse_arguments():
         "--hc-filter",
         metavar="",
         default=None,
-        action=list_parser,
+        action=ListParser,
         help="hide responses with the specified content lenghts. ex: '1234,4321'",
     )
     filters.add_argument(
@@ -268,7 +268,7 @@ def parse_arguments():
         "--hw-filter",
         metavar="",
         default=None,
-        action=list_parser,
+        action=ListParser,
         help="hide responses with the specified  web servers. ex: 'apache,nginx'",
     )
     filters.add_argument(
@@ -288,7 +288,7 @@ def parse_arguments():
     parsed_arguments.wordlist.end_of_file = parsed_arguments.wordlist.seek(0, 2)
     parsed_arguments.wordlist.seek(0)
 
-    if parsed_arguments.extension != None:
+    if parsed_arguments.extension is not None:
         parsed_arguments.request_total += parsed_arguments.request_total * len(parsed_arguments.extension)
 
     # setting up screenlock to avoid threads printing at the same time and mess the output
@@ -384,7 +384,7 @@ def validate_url(url):
 
 
 def validate_body_data(post_data, js):
-    if post_data == None:
+    if post_data is None:
         show_error("No post data specified", f"function::{currentframe().f_code.co_name}")
         exit(-1)
     elif js:
@@ -403,9 +403,9 @@ def validate_body_data(post_data, js):
 
 def validate_filters(hs_filter, hc_filter, hw_filter, hr_filer):
     # (hide status code filter)
-    if hs_filter != None:
+    if hs_filter is not None:
         for status_code in hs_filter:
-            if status_code.isdigit == False:
+            if not status_code.isdigit:
                 show_error(
                     f" incorrect hs_filter value {status_code}",
                     f"function::{currentframe().f_code.co_name}",
@@ -413,9 +413,9 @@ def validate_filters(hs_filter, hc_filter, hw_filter, hr_filer):
                 exit(-1)
 
     # (hide content length filter)
-    if hc_filter != None:
+    if hc_filter is not None:
         for content_length in hc_filter:
-            if content_length.isdigit == False:
+            if not content_length.isdigit:
                 show_error(
                     f" incorrect hc_filter value {status_code}",
                     f"function::{currentframe().f_code.co_name}",
@@ -449,7 +449,6 @@ def show_error(msg, origin):
     print(f"\n {origin} --> {AsciiColors.FAIL}error{AsciiColors.ENDC}")
     print(f" [X] {AsciiColors.FAIL}{msg}{AsciiColors.ENDC}")
     
-
 
 def show_config(args):
     print(f"[!] %-20s %s" % (f"{AsciiColors.HEADER}GENERAL{AsciiColors.ENDC}", "=" * 40))
@@ -488,11 +487,6 @@ def show_config(args):
     sleep(2)
 
 
-def verbose(state, msg):
-    if state == True:
-        print("[!] verbose:", msg)
-
-
 def prog_bar(args):
     """Progress bar"""
 
@@ -503,7 +497,7 @@ def prog_bar(args):
     with alive_bar(args.request_total, title=f"Progress", enrich_print=False) as bar:
         while True:
             # stop thread if run_event has been cleaned
-            if args.run_event.is_set() == False :
+            if not args.run_event.is_set() and threading.active_count() <= 3:
                 break
 
             sleep(0.1)
@@ -513,28 +507,21 @@ def request_thread(args):
     global bar  # used to increment progress bar
     
     retry_counter = 0
-    headers = args.headers  # HTTP HEADERS
 
     # using local variables instead of shared variables to avoid threading problems 
     extensions = args.extension
+    extension_iterator = 0
 
-    # User-Agent
-    if args.randomize_user_agent == True:
-        headers["User-Agent"] = random_choice(args.UserAgent_wordlist)  # choosing a random user agent if specified
-    else:
-        headers.setdefault("User-Agent", args.user_agent)  # default user agent
+    # setting up headers 
+    headers = args.headers  
+    headers.setdefault("User-Agent", random_choice(args.UserAgent_wordlist) if args.randomize_user_agent else args.user_agent)
 
     cookies = args.cookies
-
-    if args.http_method == "POST": 
-        body_data = args.body_data
-
-    extension_iterator = 0
 
     while args.run_event.is_set() and args.request_count < args.request_total:
         # iterating to next word only when retry_counter = 0
         if retry_counter == 0:
-            if extensions != None and extension_iterator == 0:
+            if extensions is not None and extension_iterator == 0:
                 with args.lock:
                     word = quote(args.wordlist.readline().strip())
                 temp = word
@@ -546,7 +533,7 @@ def request_thread(args):
                 with args.lock:
                     word = quote(args.wordlist.readline().strip())
 
-            if args.add_slash == True:
+            if args.add_slash:
                 word += "/"
 
         # adding word to url
@@ -584,7 +571,7 @@ def request_thread(args):
                 args.screenlock.release()
                 continue
 
-            elif args.ignore_errors == True:
+            elif args.ignore_errors:
                 with args.lock:
                     args.words_requested.append(word)
                     args.request_count += 1
@@ -601,7 +588,6 @@ def request_thread(args):
         req.headers.setdefault("Content-Length", "UNK")
         req.headers.setdefault("Server", "UNK")
 
-        #if args.hs_filter != None or args.hc_filter != None or args.hw_filter != None or   args.hr_filter != None:
         if any(argument_filter is not None for argument_filter in args.filters.values()):
             # if filters specified, then prints only if response_filters  
             if not response_filter(args.filters, req):
@@ -620,37 +606,37 @@ def request_thread(args):
 def response_filter(filters, response):
     filter_status = False
     # show filters
-    if filters["hs"] != None:
+    if filters.get("hs", None) is not None:
         # show matching status code filter
-        if str(response.status_code) in filters["hs"]:
+        if str(response.status_code) in filters.get("hs", None):
             filter_status = True
 
-    elif filters["hc"] != None:
+    elif filters.get("hc", None) is not None:
         # show matching content length filter
         if response.headers["Content-Length"] != "UNK":
-            if str(response.headers["Content-Length"]) in filters["hc"]:
+            if str(response.headers["Content-Length"]) in filters.get("hc", None):
                 filter_status = True
 
-    elif filters["hw"] != None:
+    elif filters.get("hw", None) is not None:
         # show matching web server name filter
-        if response.headers["Server"] in filters["hw"]:
+        if response.headers["Server"] in filters.get("hw", None):
             filter_status = True
 
-    elif filters["hr"] != None:
+    elif filters.get("hr", None) is not None:
         # show matching pattern filter
         # searching matching patterns in response headers
         matching = False
         for header in response.headers.keys():
-            if re.search(filters["hr"], response.headers[header]) != None:
+            if re.search(filters.get("hr", None), response.headers[header]) is not None:
                 matching = True
                 break
 
-        if matching == True:
+        if matching:
             filter_status = True
         else:
             # searching matching patterns in response content
-            aux = re.search(filters["hr"], response.content.decode("latin-1"))
-            if aux != None:
+            aux = re.search(filters.get("hr", None), response.content.decode("latin-1"))
+            if aux is not None:
                 filter_status = True
 
     return filter_status
@@ -667,8 +653,9 @@ def show_output(payload, req, screenlock, output_file=None):
     screenlock.release()
     
     # write output to a file (log) if specified
-    if output_file != None:
+    if output_file is not None:
         output_file(output_string)
+
 
 def thread_starter(args):
     """this functions prepare and execute (start) every thread"""
@@ -710,7 +697,7 @@ def thread_starter(args):
                     thread_status = True
                     break
 
-            if thread_status == False:
+            if not thread_status :
                 break
 
             sleep(0.1)
@@ -751,7 +738,7 @@ def main():
 
     # initial_checks(parsed_arguments)
 
-    if parsed_arguments.quiet == False:
+    if not parsed_arguments.quiet :
         show_config(parsed_arguments)
 
     return thread_starter(parsed_arguments)
@@ -770,6 +757,7 @@ if __name__ == "__main__":
 #   - Codificadores para los payloads
 #   - Aceptar rangos de valores en los content length y status code
 #   - implementar multiproceso combinado con multihilo
+#   - implementar verbose/debug output
 
 ##  ERRORES O BUGS PARA CORREGIR
 #   - al comparar el resultado con otras herramientas como gobuster, webEnum muestra resultados diferentes.
