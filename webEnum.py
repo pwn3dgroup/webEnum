@@ -564,7 +564,6 @@ def request_thread(args):
                 args.screenlock.release()
 
             if retry_counter < args.retries:
-                print("\n\n\n\n HOOOOOOOOOE")
                 retry_counter += 1
                 args.screenlock.acquire()
                 print(f" {AsciiColors.WARNING}// Retrying connection PAYLOAD[{payload}] retries[{retry_counter}] {AsciiColors.ENDC}")
